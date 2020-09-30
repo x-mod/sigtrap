@@ -2,16 +2,21 @@ package sigtrap
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
+
+	"github.com/x-mod/event"
 )
 
 type Handler func()
 
 type Capture struct {
-	notify chan os.Signal
-	traps  map[string]Handler
-	stop   chan struct{}
+	notify  chan os.Signal
+	traps   map[string]Handler
+	close   chan struct{}
+	serving *event.Event
+	stopped *event.Event
 }
 
 type CaptureOpt func(*Capture)
@@ -26,7 +31,10 @@ func Trap(sig os.Signal, handler Handler) CaptureOpt {
 
 func New(opts ...CaptureOpt) *Capture {
 	ca := &Capture{
-		traps: make(map[string]Handler),
+		traps:   make(map[string]Handler),
+		close:   make(chan struct{}),
+		serving: event.New(),
+		stopped: event.New(),
 	}
 	for _, o := range opts {
 		o(ca)
@@ -35,32 +43,42 @@ func New(opts ...CaptureOpt) *Capture {
 	return ca
 }
 
-func (ca *Capture) Serve(ctx context.Context) error {
-	if len(ca.traps) == 0 {
+func (cap *Capture) Serve(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("context required")
+	}
+	if len(cap.traps) == 0 {
 		return nil
 	}
-	ca.stop = make(chan struct{})
-	signal.Notify(ca.notify)
+
+	signal.Notify(cap.notify)
+	defer cap.stopped.Fire()
+	cap.serving.Fire()
+
 	for {
 		select {
-		case <-ca.stop:
+		case <-cap.close:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
-		case sig := <-ca.notify:
-			ca.fire(sig)
+		case sig := <-cap.notify:
+			cap.fire(sig)
 		}
 	}
 }
 
-func (ca *Capture) fire(sig os.Signal) {
-	if handler, ok := ca.traps[sig.String()]; ok {
+func (cap *Capture) fire(sig os.Signal) {
+	if handler, ok := cap.traps[sig.String()]; ok {
 		handler()
 	}
 }
-
-func (ca *Capture) Close() {
-	if ca.stop != nil {
-		close(ca.stop)
+func (cap *Capture) Serving() <-chan struct{} {
+	return cap.serving.Done()
+}
+func (cap *Capture) Close() <-chan struct{} {
+	if cap.serving.HasFired() {
+		close(cap.close)
+		return cap.stopped.Done()
 	}
+	return event.Done()
 }

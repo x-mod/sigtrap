@@ -11,10 +11,17 @@ import (
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := sigtrap.New(
-		sigtrap.Trap(syscall.SIGINT, sigtrap.Handler(cancel)),
+		sigtrap.Trap(syscall.SIGINT, sigtrap.Handler(func() {
+			log.Println("sig INT catched")
+			cancel()
+		})),
 		sigtrap.Trap(syscall.SIGTERM, sigtrap.Handler(cancel)),
 	)
 	defer c.Close()
-	log.Println("sigtrap: waiting ...")
-	log.Println("sigtrap:", c.Serve(ctx))
+
+	go c.Serve(ctx)
+	<-c.Serving()
+	log.Println("sigtrap is serv ...")
+	<-ctx.Done()
+	log.Println("sigtrap done ... ", ctx.Err())
 }
